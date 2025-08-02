@@ -76,7 +76,7 @@ class ServerCompatibleAdmin {
         });
     }
 
-    // Checking editing compatibility with server.js 
+    // Checking editing compatibility with server.js 2
     // Generate ID and license key using same method as server
     generateId() {
         return crypto.randomBytes(16).toString('hex');
