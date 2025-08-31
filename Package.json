@@ -2,7 +2,7 @@
   "name": "license-server",
   "version": "1.0.0",
   "description": "Software License Management Server with SQLite",
-  "main": "server.js",
+  "main": "gui_server.js",
   "scripts": {
     "start": "node gui_server.js",
     "dev": "nodemon gui_server.js",
