@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(node:*)",
+      "Bash(PORT=3001 node gui_server.js)",
+      "Bash(curl:*)",
+      "Bash(lsof:*)",
+      "Bash(ps:*)",
+      "Bash(kill:*)",
+      "Bash(open:*)",
+      "Bash(sqlite3:*)",
+      "Bash(npm install:*)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}

@@ -1,0 +1,94 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>License Admin Panel</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 20px; }
+    h1 { color: #333; }
+    section { margin-bottom: 40px; }
+    table { border-collapse: collapse; width: 100%; margin-top: 10px; }
+    th, td { border: 1px solid #ccc; padding: 8px; text-align: left; }
+    th { background-color: #f0f0f0; }
+    input, button { margin: 5px; padding: 5px 10px; }
+    td[contenteditable] { background-color: #f9f9f9; }
+  </style>
+</head>
+<body>
+  <h1>License Admin Panel</h1>
+
+  <!-- Products -->
+  <section>
+    <h2>Products</h2>
+    <input id="prodId" placeholder="Product ID (e.g. TEMPAS)" />
+    <input id="prodName" placeholder="Name" />
+    <input id="prodVersion" placeholder="Version" />
+    <input id="prodActivations" placeholder="Max Activations" />
+    <input id="prodValidity" placeholder="Validity Days" />
+    <button onclick="addProduct()">Add Product</button>
+    <table id="productsTable">
+      <thead>
+        <tr>
+          <th>ID</th><th>Name</th><th>Version</th><th>Max Activations</th><th>Validity Days</th><th>Actions</th>
+        </tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+  </section>
+
+  <script>
+    async function loadProducts() {
+      const res = await fetch('/api/products');
+      const data = await res.json();
+      const table = document.querySelector('#productsTable tbody');
+      table.innerHTML = '';
+      data.forEach(prod => {
+        const row = document.createElement('tr');
+        row.innerHTML = `
+          <td contenteditable onblur="editProduct('${prod.id}', 'id', this)">${prod.id}</td>
+          <td contenteditable onblur="editProduct('${prod.id}', 'name', this)">${prod.name}</td>
+          <td contenteditable onblur="editProduct('${prod.id}', 'version', this)">${prod.version}</td>
+          <td contenteditable onblur="editProduct('${prod.id}', 'default_max_activations', this)">${prod.default_max_activations}</td>
+          <td contenteditable onblur="editProduct('${prod.id}', 'default_validity_days', this)">${prod.default_validity_days}</td>
+          <td><button onclick="deleteProduct('${prod.id}')">Delete</button></td>
+        `;
+        table.appendChild(row);
+      });
+    }
+
+    async function addProduct() {
+      const body = {
+        id: document.getElementById('prodId').value,
+        name: document.getElementById('prodName').value,
+        version: document.getElementById('prodVersion').value,
+        default_max_activations: document.getElementById('prodActivations').value,
+        default_validity_days: document.getElementById('prodValidity').value
+      };
+      await fetch('/api/products', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+      });
+      loadProducts();
+    }
+
+    async function deleteProduct(id) {
+      await fetch(`/api/products/${id}`, { method: 'DELETE' });
+      loadProducts();
+    }
+
+    async function editProduct(id, field, el) {
+      const value = el.textContent.trim();
+      await fetch(`/api/products/${id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ [field]: value })
+      });
+    }
+
+    window.onload = loadProducts;
+  </script>
+</body>
+</html>

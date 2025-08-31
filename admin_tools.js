@@ -1,11 +1,24 @@
 // server_compatible_admin.js - Admin tools compatible with your server.js schema
-const sqlite3 = require('sqlite3').verbose();
 const readline = require('readline');
 const path = require('path');
 const crypto = require('crypto');
 
-// Use the same database path as your server
+// Database configuration - supports both SQLite and PostgreSQL
+const USE_POSTGRES = process.env.DATABASE_URL ? true : false;
 const DB_PATH = process.env.DB_PATH || './license.db';
+
+let dbConnection = null;
+
+if (USE_POSTGRES) {
+    const { Pool } = require('pg');
+    dbConnection = new Pool({
+        connectionString: process.env.DATABASE_URL,
+        ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false
+    });
+} else {
+    const sqlite3 = require('sqlite3').verbose();
+    dbConnection = null; // Will be initialized in connect()
+}
 
 // Create readline interface for interactive input
 const rl = readline.createInterface({
@@ -22,58 +35,94 @@ function askQuestion(question) {
 class ServerCompatibleAdmin {
     constructor() {
         this.db = null;
+        this.usePostgres = USE_POSTGRES;
     }
 
     async connect() {
-        return new Promise((resolve, reject) => {
-            this.db = new sqlite3.Database(DB_PATH, (err) => {
-                if (err) {
-                    reject(err);
-                } else {
-                    resolve();
-                }
-            });
-        });
-    }
-
-    async close() {
-        return new Promise((resolve, reject) => {
-            if (this.db) {
-                this.db.close((err) => {
+        if (this.usePostgres) {
+            try {
+                this.db = dbConnection;
+                await this.db.query('SELECT NOW()');
+            } catch (error) {
+                throw new Error(`PostgreSQL connection failed: ${error.message}`);
+            }
+        } else {
+            return new Promise((resolve, reject) => {
+                const sqlite3 = require('sqlite3').verbose();
+                this.db = new sqlite3.Database(DB_PATH, (err) => {
                     if (err) {
                         reject(err);
                     } else {
                         resolve();
                     }
                 });
-            } else {
-                resolve();
-            }
-        });
+            });
+        }
+    }
+
+    async close() {
+        if (this.usePostgres) {
+            await this.db.end();
+        } else {
+            return new Promise((resolve, reject) => {
+                if (this.db) {
+                    this.db.close((err) => {
+                        if (err) {
+                            reject(err);
+                        } else {
+                            resolve();
+                        }
+                    });
+                } else {
+                    resolve();
+                }
+            });
+        }
     }
 
     async getAllRows(query, params = []) {
-        return new Promise((resolve, reject) => {
-            this.db.all(query, params, (err, rows) => {
-                if (err) {
-                    reject(err);
-                } else {
-                    resolve(rows);
-                }
+        if (this.usePostgres) {
+            try {
+                const result = await this.db.query(query, params);
+                return result.rows;
+            } catch (error) {
+                throw error;
+            }
+        } else {
+            return new Promise((resolve, reject) => {
+                this.db.all(query, params, (err, rows) => {
+                    if (err) {
+                        reject(err);
+                    } else {
+                        resolve(rows);
+                    }
+                });
             });
-        });
+        }
     }
 
     async runQuery(query, params = []) {
-        return new Promise((resolve, reject) => {
-            this.db.run(query, params, function(err) {
-                if (err) {
-                    reject(err);
-                } else {
-                    resolve({ changes: this.changes, lastID: this.lastID });
-                }
+        if (this.usePostgres) {
+            try {
+                const result = await this.db.query(query, params);
+                return { 
+                    changes: result.rowCount, 
+                    lastID: result.rows[0]?.id || null 
+                };
+            } catch (error) {
+                throw error;
+            }
+        } else {
+            return new Promise((resolve, reject) => {
+                this.db.run(query, params, function(err) {
+                    if (err) {
+                        reject(err);
+                    } else {
+                        resolve({ changes: this.changes, lastID: this.lastID });
+                    }
+                });
             });
-        });
+        }
     }
 
     // Checking editing compatibility with server.js 3
@@ -139,6 +188,31 @@ class ServerCompatibleAdmin {
         }
     }
 
+    async updateCustomer(customerId, customerData) {
+        try {
+            const result = await this.runQuery(`
+                UPDATE customers 
+                SET name = ?, email = ?, company = ?, phone = ?, address = ?
+                WHERE id = ?
+            `, [
+                customerData.name,
+                customerData.email,
+                customerData.company || null,
+                customerData.phone || null,
+                customerData.address || null,
+                customerId
+            ]);
+            
+            if (result.changes === 0) {
+                return { error: 'Customer not found' };
+            }
+            
+            return { success: true, id: customerId };
+        } catch (error) {
+            return { error: error.message };
+        }
+    }
+
     // ============================================
     // PRODUCT MANAGEMENT
     // ============================================
@@ -187,6 +261,32 @@ class ServerCompatibleAdmin {
                 return { error: 'Product not found' };
             }
             return { success: true };
+        } catch (error) {
+            return { error: error.message };
+        }
+    }
+
+    async updateProduct(productId, productData) {
+        try {
+            const result = await this.runQuery(`
+                UPDATE products 
+                SET name = ?, description = ?, version = ?, features = ?, default_max_activations = ?, default_validity_days = ?
+                WHERE id = ?
+            `, [
+                productData.name,
+                productData.description || null,
+                productData.version || null,
+                productData.features ? JSON.stringify(productData.features) : JSON.stringify([]),
+                productData.default_max_activations || 1,
+                productData.default_validity_days || 365,
+                productId
+            ]);
+            
+            if (result.changes === 0) {
+                return { error: 'Product not found' };
+            }
+            
+            return { success: true, id: productId };
         } catch (error) {
             return { error: error.message };
         }
@@ -348,10 +448,21 @@ class ServerCompatibleAdmin {
             const values = Object.values(updates);
             values.push(licenseKey);
 
-            const result = await this.runQuery(
-                `UPDATE licenses SET ${setClause}, updated_at = CURRENT_TIMESTAMP WHERE license_key = ?`,
-                values
-            );
+            let result;
+            if (this.usePostgres) {
+                // PostgreSQL: use $1, $2, etc
+                const setClauseWithParams = Object.keys(updates).map((key, i) => `${key} = $${i + 1}`).join(', ');
+                result = await this.runQuery(
+                    `UPDATE licenses SET ${setClauseWithParams}, updated_at = NOW() WHERE license_key = $${values.length}`,
+                    values
+                );
+            } else {
+                // SQLite: use ? placeholders
+                result = await this.runQuery(
+                    `UPDATE licenses SET ${setClause}, updated_at = CURRENT_TIMESTAMP WHERE license_key = ?`,
+                    values
+                );
+            }
 
             if (result.changes === 0) {
                 return { error: 'License not found' };
@@ -368,20 +479,31 @@ class ServerCompatibleAdmin {
 
     async generateReport() {
         try {
-            const [totalLicenses] = await this.getAllRows('SELECT COUNT(*) as count FROM licenses');
-            const [activeLicenses] = await this.getAllRows('SELECT COUNT(*) as count FROM licenses WHERE status = "active"');
-            const [expiredLicenses] = await this.getAllRows('SELECT COUNT(*) as count FROM licenses WHERE expiry_date < datetime("now") AND status = "active"');
-            const [totalActivations] = await this.getAllRows('SELECT SUM(current_activations) as total FROM licenses');
-            const [uniqueCustomers] = await this.getAllRows('SELECT COUNT(DISTINCT customer_id) as count FROM licenses');
-            const [totalProducts] = await this.getAllRows('SELECT COUNT(*) as count FROM products');
+            let totalLicenses, activeLicenses, expiredLicenses, totalActivations, uniqueCustomers, totalProducts;
+            
+            if (this.usePostgres) {
+                totalLicenses = await this.getAllRows('SELECT COUNT(*) as count FROM licenses');
+                activeLicenses = await this.getAllRows('SELECT COUNT(*) as count FROM licenses WHERE status = $1', ['active']);
+                expiredLicenses = await this.getAllRows('SELECT COUNT(*) as count FROM licenses WHERE expiry_date < NOW() AND status = $1', ['active']);
+                totalActivations = await this.getAllRows('SELECT SUM(current_activations) as total FROM licenses');
+                uniqueCustomers = await this.getAllRows('SELECT COUNT(DISTINCT customer_id) as count FROM licenses');
+                totalProducts = await this.getAllRows('SELECT COUNT(*) as count FROM products');
+            } else {
+                totalLicenses = await this.getAllRows('SELECT COUNT(*) as count FROM licenses');
+                activeLicenses = await this.getAllRows('SELECT COUNT(*) as count FROM licenses WHERE status = ?', ['active']);
+                expiredLicenses = await this.getAllRows('SELECT COUNT(*) as count FROM licenses WHERE expiry_date < datetime("now") AND status = ?', ['active']);
+                totalActivations = await this.getAllRows('SELECT SUM(current_activations) as total FROM licenses');
+                uniqueCustomers = await this.getAllRows('SELECT COUNT(DISTINCT customer_id) as count FROM licenses');
+                totalProducts = await this.getAllRows('SELECT COUNT(*) as count FROM products');
+            }
 
             return {
-                total_licenses: totalLicenses.count,
-                active_licenses: activeLicenses.count,
-                expired_licenses: expiredLicenses.count,
-                total_activations: totalActivations.total || 0,
-                unique_customers: uniqueCustomers.count,
-                total_products: totalProducts.count
+                total_licenses: totalLicenses[0].count,
+                active_licenses: activeLicenses[0].count,
+                expired_licenses: expiredLicenses[0].count,
+                total_activations: totalActivations[0].total || 0,
+                unique_customers: uniqueCustomers[0].count,
+                total_products: totalProducts[0].count
             };
         } catch (error) {
             return { error: error.message };
@@ -891,6 +1013,7 @@ class ServerCompatibleCLI {
         }
     }
 
+    
     async revokeLicense() {
         console.log('\n🚫 Revoke License:');
         
@@ -1027,6 +1150,57 @@ class ServerCompatibleCLI {
         } catch (error) {
             console.error('❌ Compatibility check failed:', error.message);
         }
+    }
+
+    getProducts() {
+    const stmt = this.db.prepare('SELECT * FROM products');
+    return stmt.all();
+    }
+
+    addProduct(product) {
+    const stmt = this.db.prepare(`
+        INSERT INTO products (id, name, version, default_max_activations, default_validity_days)
+        VALUES (?, ?, ?, ?, ?)
+    `);
+    stmt.run(
+        product.id,
+        product.name,
+        product.version,
+        product.default_max_activations,
+        product.default_validity_days
+    );
+    }
+
+    updateProduct(id, fields) {
+    const allowed = ['name', 'version', 'default_max_activations', 'default_validity_days'];
+    const updates = Object.entries(fields)
+        .filter(([key]) => allowed.includes(key))
+        .map(([key, value]) => `${key} = ?`);
+    const values = Object.entries(fields)
+        .filter(([key]) => allowed.includes(key))
+        .map(([, value]) => value);
+
+    if (updates.length === 0) return;
+
+    const stmt = this.db.prepare(`
+        UPDATE products SET ${updates.join(', ')} WHERE id = ?
+    `);
+    stmt.run(...values, id);
+    }
+
+    deleteProduct(id) {
+    const stmt = this.db.prepare('DELETE FROM products WHERE id = ?');
+    stmt.run(id);
+    }
+
+    getCustomers() {
+    const stmt = this.db.prepare('SELECT * FROM customers');
+    return stmt.all();
+    }
+
+    getLicenses() {
+    const stmt = this.db.prepare('SELECT * FROM licenses');
+    return stmt.all();
     }
 }
 
