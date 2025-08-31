@@ -12,7 +12,14 @@
       "Bash(npm install:*)",
       "Bash(git add:*)",
       "Bash(git commit:*)",
-      "Bash(git push:*)"
+      "Bash(git push:*)",
+      "Bash(railway login:*)",
+      "Bash(git init:*)",
+      "Bash(railway --version)",
+      "Bash(railway up:*)",
+      "Bash(railway run:*)",
+      "Bash(railway variables:*)",
+      "Bash(railway services:*)"
     ],
     "deny": [],
     "ask": []
